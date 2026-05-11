@@ -2920,70 +2920,88 @@ typedef NS_ENUM(NSUInteger, YYTextMoveDirection) {
 
 - (void)paste:(id)sender {
     [self _endTouchTracking];
-    UIPasteboard *p = [UIPasteboard generalPasteboard];
-    NSAttributedString *atr = nil;
     
-    if (_allowsPasteAttributedString) {
-        atr = p.yy_AttributedString;
-        if (atr.length == 0) atr = nil;
-    }
-    if (!atr && _allowsPasteImage) {
-        UIImage *img = nil;
+    BOOL allowsPasteAttr = _allowsPasteAttributedString;
+    BOOL allowsPasteImg = _allowsPasteImage;
+    
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        UIPasteboard *p = [UIPasteboard generalPasteboard];
+        NSAttributedString *atr = nil;
+        
+        if (allowsPasteAttr) {
+            atr = p.yy_AttributedString;
+            if (atr.length == 0) atr = nil;
+        }
+        
+        UIImage *pastedImg = nil;
+        if (!atr && allowsPasteImg) {
+            Class cls = NSClassFromString(@"YYImage");
+            if (cls) {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wundeclared-selector"
+                NSData *data;
+                if ((data = p.yy_GIFData)) {
+                    pastedImg = [(id)cls performSelector:@selector(imageWithData:scale:) withObject:data withObject:nil];
+                }
+                if (!pastedImg && (data = p.yy_PNGData)) {
+                    pastedImg = [(id)cls performSelector:@selector(imageWithData:scale:) withObject:data withObject:nil];
+                }
+                if (!pastedImg && (data = p.yy_WEBPData)) {
+                    pastedImg = [(id)cls performSelector:@selector(imageWithData:scale:) withObject:data withObject:nil];
+                }
+#pragma clang diagnostic pop
+            }
+            if (!pastedImg) {
+                pastedImg = p.image;
+            }
+            if (!pastedImg && p.yy_ImageData) {
+                pastedImg = [UIImage imageWithData:p.yy_ImageData scale:YYTextScreenScale()];
+            }
+        }
+        
+        NSString *plainString = (!atr && !pastedImg) ? p.string : nil;
+        
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self _performPasteWithAttributedString:atr image:pastedImg plainString:plainString];
+        });
+    });
+}
+
+- (void)_performPasteWithAttributedString:(NSAttributedString *)atr
+                                    image:(UIImage *)img
+                              plainString:(NSString *)plainString {
+    if (!atr && img && img.size.width > 1 && img.size.height > 1) {
+        id content = img;
         
         Class cls = NSClassFromString(@"YYImage");
         if (cls) {
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wundeclared-selector"
-            if (p.yy_GIFData) {
-                img = [(id)cls performSelector:@selector(imageWithData:scale:) withObject:p.yy_GIFData withObject:nil];
-            }
-            if (!img && p.yy_PNGData) {
-                img = [(id)cls performSelector:@selector(imageWithData:scale:) withObject:p.yy_PNGData withObject:nil];
-            }
-            if (!img && p.yy_WEBPData) {
-                img = [(id)cls performSelector:@selector(imageWithData:scale:) withObject:p.yy_WEBPData withObject:nil];
-            }
-#pragma clang diagnostic pop
-        }
-        
-        if (!img) {
-            img = p.image;
-        }
-        if (!img && p.yy_ImageData) {
-            img = [UIImage imageWithData:p.yy_ImageData scale:YYTextScreenScale()];
-        }
-        if (img && img.size.width > 1 && img.size.height > 1) {
-            id content = img;
-            
-            if (cls) {
-                if ([img conformsToProtocol:NSProtocolFromString(@"YYAnimatedImage")]) {
-                    NSNumber *frameCount = [img valueForKey:@"animatedImageFrameCount"];
-                    if (frameCount.integerValue > 1) {
-                        Class viewCls = NSClassFromString(@"YYAnimatedImageView");
-                        UIImageView *imgView = [(id)viewCls new];
-                        imgView.image = img;
-                        imgView.frame = CGRectMake(0, 0, img.size.width, img.size.height);
-                        if (imgView) {
-                            content = imgView;
-                        }
+            if ([img conformsToProtocol:NSProtocolFromString(@"YYAnimatedImage")]) {
+                NSNumber *frameCount = [img valueForKey:@"animatedImageFrameCount"];
+                if (frameCount.integerValue > 1) {
+                    Class viewCls = NSClassFromString(@"YYAnimatedImageView");
+                    UIImageView *imgView = [(id)viewCls new];
+                    imgView.image = img;
+                    imgView.frame = CGRectMake(0, 0, img.size.width, img.size.height);
+                    if (imgView) {
+                        content = imgView;
                     }
                 }
             }
-            
-            if ([content isKindOfClass:[UIImage class]] && img.images.count > 1) {
-                UIImageView *imgView = [UIImageView new];
-                imgView.image = img;
-                imgView.frame = CGRectMake(0, 0, img.size.width, img.size.height);
-                if (imgView) {
-                    content = imgView;
-                }
-            }
-            
-            NSMutableAttributedString *attText = [NSAttributedString yy_attachmentStringWithContent:content contentMode:UIViewContentModeScaleToFill width:img.size.width ascent:img.size.height descent:0];
-            NSDictionary *attrs = _typingAttributesHolder.yy_attributes;
-            if (attrs) [attText addAttributes:attrs range:NSMakeRange(0, attText.length)];
-            atr = attText;
         }
+        
+        if ([content isKindOfClass:[UIImage class]] && img.images.count > 1) {
+            UIImageView *imgView = [UIImageView new];
+            imgView.image = img;
+            imgView.frame = CGRectMake(0, 0, img.size.width, img.size.height);
+            if (imgView) {
+                content = imgView;
+            }
+        }
+        
+        NSMutableAttributedString *attText = [NSAttributedString yy_attachmentStringWithContent:content contentMode:UIViewContentModeScaleToFill width:img.size.width ascent:img.size.height descent:0];
+        NSDictionary *attrs = _typingAttributesHolder.yy_attributes;
+        if (attrs) [attText addAttributes:attrs range:NSMakeRange(0, attText.length)];
+        atr = attText;
     }
     
     if (atr) {
@@ -2997,13 +3015,10 @@ typedef NS_ENUM(NSUInteger, YYTextMoveDirection) {
         if (range) {
             self.selectedRange = NSMakeRange(range.end.offset, 0);
         }
-    } else {
-        NSString *string = p.string;
-        if (string.length > 0) {
-            [self _saveToUndoStack];
-            [self _resetRedoStack];
-            [self replaceRange:_selectedTextRange withText:string];
-        }
+    } else if (plainString.length > 0) {
+        [self _saveToUndoStack];
+        [self _resetRedoStack];
+        [self replaceRange:_selectedTextRange withText:plainString];
     }
 }
 
